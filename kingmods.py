@@ -2,10 +2,12 @@ import os
 import json
 import urllib.request
 from html.parser import HTMLParser
+from urllib.parse import urljoin
 
 KINGMODS_URL = "https://www.kingmods.net/en/fs25/new-mods"
 DISCORD_WEBHOOK = os.environ["DISCORD_WEBHOOK"]
 DATA_FILE = "sent_mods.json"
+BASE_URL = "https://www.kingmods.net"
 
 
 class ModParser(HTMLParser):
@@ -16,24 +18,45 @@ class ModParser(HTMLParser):
         self.in_link = False
 
     def handle_starttag(self, tag, attrs):
-        if tag != "a":
-            return
-
         attrs = dict(attrs)
-        href = attrs.get("href", "")
 
-        if "/fs25/mods/" in href:
-            self.current = {
-                "url": "https://www.kingmods.net" + href
-                if href.startswith("/")
-                else href,
-                "name": ""
-            }
-            self.in_link = True
+        # Start of a mod link
+        if tag == "a":
+            href = attrs.get("href", "")
+
+            if "/fs25/mods/" in href:
+                self.current = {
+                    "url": urljoin(BASE_URL, href),
+                    "name": "",
+                    "image": ""
+                }
+                self.in_link = True
+                return
+
+        # Image inside the mod link
+        if tag == "img" and self.current:
+            image = (
+                attrs.get("src")
+                or attrs.get("data-src")
+                or attrs.get("data-lazy-src")
+                or ""
+            )
+
+            # Some sites use srcset instead
+            if not image:
+                srcset = attrs.get("srcset", "")
+                if srcset:
+                    image = srcset.split(",")[0].strip().split(" ")[0]
+
+            if image:
+                self.current["image"] = urljoin(BASE_URL, image)
 
     def handle_data(self, data):
         if self.current and self.in_link:
-            self.current["name"] += data.strip()
+            text = " ".join(data.split())
+
+            if text:
+                self.current["name"] += " " + text
 
     def handle_endtag(self, tag):
         if tag == "a" and self.current:
@@ -41,6 +64,7 @@ class ModParser(HTMLParser):
 
             if name:
                 self.current["name"] = name
+
                 if self.current not in self.mods:
                     self.mods.append(self.current)
 
@@ -68,7 +92,7 @@ def get_page():
     request = urllib.request.Request(
         KINGMODS_URL,
         headers={
-            "User-Agent": "Mozilla/5.0"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130 Safari/537.36"
         }
     )
 
@@ -77,19 +101,25 @@ def get_page():
 
 
 def send_discord(mod):
+    embed = {
+        "title": "🆕 New FS25 Mod",
+        "description": f"**{mod['name']}**",
+        "url": mod["url"],
+        "color": 3066993,
+        "footer": {
+            "text": "KingMods • Farming Simulator 25"
+        }
+    }
+
+    # Add mod image if found
+    if mod.get("image"):
+        embed["image"] = {
+            "url": mod["image"]
+        }
+
     payload = {
         "username": "KingMods",
-        "embeds": [
-            {
-                "title": "🆕 New FS25 Mod",
-                "description": f"**{mod['name']}**",
-                "url": mod["url"],
-                "color": 3066993,
-                "footer": {
-                    "text": "KingMods • Farming Simulator 25"
-                }
-            }
-        ]
+        "embeds": [embed]
     }
 
     data = json.dumps(payload).encode("utf-8")
@@ -120,9 +150,15 @@ def main():
 
     print(f"Found {len(mods)} mods.")
 
+    for mod in mods:
+        print(
+            f"MOD: {mod['name']} | "
+            f"IMAGE: {mod['image'] or 'NONE'}"
+        )
+
     sent = load_sent()
 
-    # First run: remember existing mods without spamming Discord.
+    # First run: remember existing mods without sending them
     if not sent:
         for mod in mods:
             sent.add(mod["url"])
@@ -147,7 +183,6 @@ def main():
         except Exception as e:
             print(f"Discord error: {e}")
 
-    # Keep database reasonably small.
     if len(sent) > 2000:
         sent = set(list(sent)[-1500:])
 
