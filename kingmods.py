@@ -1,4 +1,3 @@
-```python
 import os
 import json
 import re
@@ -173,12 +172,9 @@ def get_mod_details(mod):
         publisher = "Unknown"
 
         publisher_patterns = [
-            # JSON / structured data
             r'"publisher"\s*:\s*\{\s*"name"\s*:\s*"([^"]+)"',
             r'"publishedBy"\s*:\s*"([^"]+)"',
             r'"publisher"\s*:\s*"([^"]+)"',
-
-            # HTML / visible page
             r'Published\s+by\s*</[^>]+>\s*<[^>]+>\s*([^<]+)',
             r'Published\s+by\s*:\s*([^<\r\n]+)',
             r'Published\s+by\s+([^<\r\n]+)',
@@ -417,4 +413,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-```
