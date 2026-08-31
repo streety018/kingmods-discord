@@ -1,3 +1,4 @@
+```python
 import os
 import json
 import re
@@ -73,9 +74,8 @@ class ModParser(HTMLParser):
                 re.IGNORECASE
             )
 
-            # IMPORTANT:
-            # If there is no timestamp, this is probably a recommended/
-            # unrelated old mod somewhere else on the page.
+            # If there is no timestamp, this is probably a
+            # recommended/unrelated old mod somewhere else.
             if time_match:
                 self.current["time_text"] = time_match.group(1)
 
@@ -167,22 +167,44 @@ def get_mod_details(mod):
     try:
         html = get_page(mod["url"])
 
-        # Author
-        author = "Unknown"
+        # ---------------------------------------------------------
+        # PUBLISHED BY
+        # ---------------------------------------------------------
+        publisher = "Unknown"
 
-        author_patterns = [
-            r'"author"\s*:\s*"([^"]+)"',
-            r'"username"\s*:\s*"([^"]+)"'
+        publisher_patterns = [
+            # JSON / structured data
+            r'"publisher"\s*:\s*\{\s*"name"\s*:\s*"([^"]+)"',
+            r'"publishedBy"\s*:\s*"([^"]+)"',
+            r'"publisher"\s*:\s*"([^"]+)"',
+
+            # HTML / visible page
+            r'Published\s+by\s*</[^>]+>\s*<[^>]+>\s*([^<]+)',
+            r'Published\s+by\s*:\s*([^<\r\n]+)',
+            r'Published\s+by\s+([^<\r\n]+)',
         ]
 
-        for pattern in author_patterns:
-            match = re.search(pattern, html, re.IGNORECASE)
+        for pattern in publisher_patterns:
+            match = re.search(
+                pattern,
+                html,
+                re.IGNORECASE
+            )
 
             if match:
-                author = match.group(1)
-                break
+                found_publisher = re.sub(
+                    r"\s+",
+                    " ",
+                    match.group(1)
+                ).strip()
 
-        # Version
+                if found_publisher:
+                    publisher = found_publisher
+                    break
+
+        # ---------------------------------------------------------
+        # VERSION
+        # ---------------------------------------------------------
         version = "Unknown"
 
         version_match = re.search(
@@ -194,7 +216,9 @@ def get_mod_details(mod):
         if version_match:
             version = "V" + version_match.group(1)
 
-        # Better image detection
+        # ---------------------------------------------------------
+        # IMAGE
+        # ---------------------------------------------------------
         image = mod.get("image", "")
 
         if not image:
@@ -204,14 +228,22 @@ def get_mod_details(mod):
             ]
 
             for pattern in image_patterns:
-                match = re.search(pattern, html, re.IGNORECASE)
+                match = re.search(
+                    pattern,
+                    html,
+                    re.IGNORECASE
+                )
 
                 if match:
-                    image = urljoin(BASE_URL, match.group(1))
+                    image = urljoin(
+                        BASE_URL,
+                        match.group(1)
+                    )
                     break
 
-        # Determine whether KingMods marked it as Updated.
-        # The word "Updated" is usually present in the listing title.
+        # ---------------------------------------------------------
+        # DETERMINE NEW / UPDATED
+        # ---------------------------------------------------------
         is_update = bool(
             re.search(
                 r"\bUpdated\b",
@@ -220,7 +252,7 @@ def get_mod_details(mod):
             )
         )
 
-        # Remove "Updated" from the actual title.
+        # Remove "Updated" from actual title.
         clean_name = re.sub(
             r"^\s*Updated\s+",
             "",
@@ -232,7 +264,7 @@ def get_mod_details(mod):
             "name": clean_name,
             "url": mod["url"],
             "image": image,
-            "author": author,
+            "author": publisher,
             "version": version,
             "is_update": is_update
         }
@@ -247,7 +279,11 @@ def get_mod_details(mod):
             "author": "Unknown",
             "version": "Unknown",
             "is_update": bool(
-                re.search(r"\bUpdated\b", mod["name"], re.IGNORECASE)
+                re.search(
+                    r"\bUpdated\b",
+                    mod["name"],
+                    re.IGNORECASE
+                )
             )
         }
 
@@ -262,7 +298,7 @@ def send_discord(mod):
 
     description = (
         f"**{mod['name']}**\n\n"
-        f"👤 **Author:** {mod['author']}\n"
+        f"👤 **Published by:** {mod['author']}\n"
         f"🔢 **Version:** {mod['version']}"
     )
 
@@ -310,7 +346,9 @@ def main():
     parser = ModParser()
     parser.feed(html)
 
-    print(f"Found {len(parser.mods)} valid timestamped entries.")
+    print(
+        f"Found {len(parser.mods)} valid timestamped entries."
+    )
 
     valid_mods = []
 
@@ -379,3 +417,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+```
