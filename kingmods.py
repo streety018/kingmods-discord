@@ -1,13 +1,17 @@
 import os
 import json
+import re
 import urllib.request
 from html.parser import HTMLParser
 from urllib.parse import urljoin
 
 KINGMODS_URL = "https://www.kingmods.net/en/fs25/new-mods"
+BASE_URL = "https://www.kingmods.net"
 DISCORD_WEBHOOK = os.environ["DISCORD_WEBHOOK"]
 DATA_FILE = "sent_mods.json"
-BASE_URL = "https://www.kingmods.net"
+
+# Mod mora biti mlađi od 2 dana da bi bio poslat.
+MAX_AGE_DAYS = 2
 
 
 class ModParser(HTMLParser):
@@ -20,7 +24,6 @@ class ModParser(HTMLParser):
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
 
-        # Start of a mod link
         if tag == "a":
             href = attrs.get("href", "")
 
@@ -28,12 +31,12 @@ class ModParser(HTMLParser):
                 self.current = {
                     "url": urljoin(BASE_URL, href),
                     "name": "",
-                    "image": ""
+                    "image": "",
+                    "time_text": ""
                 }
                 self.in_link = True
                 return
 
-        # Image inside the mod link
         if tag == "img" and self.current:
             image = (
                 attrs.get("src")
@@ -42,7 +45,6 @@ class ModParser(HTMLParser):
                 or ""
             )
 
-            # Some sites use srcset instead
             if not image:
                 srcset = attrs.get("srcset", "")
                 if srcset:
@@ -60,13 +62,34 @@ class ModParser(HTMLParser):
 
     def handle_endtag(self, tag):
         if tag == "a" and self.current:
-            name = " ".join(self.current["name"].split())
+            text = " ".join(self.current["name"].split())
 
-            if name:
-                self.current["name"] = name
+            # KingMods timestamps
+            time_match = re.search(
+                r"(just now|"
+                r"\d+\s+(?:minute|minutes|hour|hours|day|days|week|weeks|month|months|year|years)\s+ago|"
+                r"(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s+\d{4})$",
+                text,
+                re.IGNORECASE
+            )
 
-                if self.current not in self.mods:
-                    self.mods.append(self.current)
+            # IMPORTANT:
+            # If there is no timestamp, this is probably a recommended/
+            # unrelated old mod somewhere else on the page.
+            if time_match:
+                self.current["time_text"] = time_match.group(1)
+
+                # Remove timestamp from name
+                text = text[:time_match.start()].strip()
+
+                # Remove download/view count at the end.
+                text = re.sub(r"\s+\d[\d\s]*$", "", text).strip()
+
+                self.current["name"] = text
+
+                if self.current["name"]:
+                    if self.current not in self.mods:
+                        self.mods.append(self.current)
 
             self.current = None
             self.in_link = False
@@ -88,11 +111,13 @@ def save_sent(sent):
         json.dump(list(sent), f, ensure_ascii=False, indent=2)
 
 
-def get_page():
+def get_page(url):
     request = urllib.request.Request(
-        KINGMODS_URL,
+        url,
         headers={
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130 Safari/537.36"
+            "User-Agent":
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 Chrome/130 Safari/537.36"
         }
     )
 
@@ -100,18 +125,157 @@ def get_page():
         return response.read().decode("utf-8")
 
 
+def parse_age(time_text):
+    text = time_text.lower().strip()
+
+    if text == "just now":
+        return 0
+
+    match = re.match(
+        r"(\d+)\s+(minute|minutes|hour|hours|day|days|week|weeks|month|months|year|years)\s+ago",
+        text
+    )
+
+    if not match:
+        return None
+
+    value = int(match.group(1))
+    unit = match.group(2)
+
+    if "minute" in unit:
+        return value / 1440
+
+    if "hour" in unit:
+        return value / 24
+
+    if "day" in unit:
+        return value
+
+    if "week" in unit:
+        return value * 7
+
+    if "month" in unit:
+        return value * 30
+
+    if "year" in unit:
+        return value * 365
+
+    return None
+
+
+def get_mod_details(mod):
+    try:
+        html = get_page(mod["url"])
+
+        # Author
+        author = "Unknown"
+
+        author_patterns = [
+            r'"author"\s*:\s*"([^"]+)"',
+            r'"username"\s*:\s*"([^"]+)"'
+        ]
+
+        for pattern in author_patterns:
+            match = re.search(pattern, html, re.IGNORECASE)
+
+            if match:
+                author = match.group(1)
+                break
+
+        # Version
+        version = "Unknown"
+
+        version_match = re.search(
+            r'\bV(\d+(?:\.\d+)+)\b',
+            html,
+            re.IGNORECASE
+        )
+
+        if version_match:
+            version = "V" + version_match.group(1)
+
+        # Better image detection
+        image = mod.get("image", "")
+
+        if not image:
+            image_patterns = [
+                r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)',
+                r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image'
+            ]
+
+            for pattern in image_patterns:
+                match = re.search(pattern, html, re.IGNORECASE)
+
+                if match:
+                    image = urljoin(BASE_URL, match.group(1))
+                    break
+
+        # Determine whether KingMods marked it as Updated.
+        # The word "Updated" is usually present in the listing title.
+        is_update = bool(
+            re.search(
+                r"\bUpdated\b",
+                mod["name"],
+                re.IGNORECASE
+            )
+        )
+
+        # Remove "Updated" from the actual title.
+        clean_name = re.sub(
+            r"^\s*Updated\s+",
+            "",
+            mod["name"],
+            flags=re.IGNORECASE
+        ).strip()
+
+        return {
+            "name": clean_name,
+            "url": mod["url"],
+            "image": image,
+            "author": author,
+            "version": version,
+            "is_update": is_update
+        }
+
+    except Exception as e:
+        print(f"Details error for {mod['url']}: {e}")
+
+        return {
+            "name": mod["name"],
+            "url": mod["url"],
+            "image": mod.get("image", ""),
+            "author": "Unknown",
+            "version": "Unknown",
+            "is_update": bool(
+                re.search(r"\bUpdated\b", mod["name"], re.IGNORECASE)
+            )
+        }
+
+
 def send_discord(mod):
+    if mod["is_update"]:
+        title = "🔄 UPDATED MOD"
+        color = 15105570
+    else:
+        title = "🆕 NEW MOD"
+        color = 3066993
+
+    description = (
+        f"**{mod['name']}**\n\n"
+        f"👤 **Author:** {mod['author']}\n"
+        f"🔢 **Version:** {mod['version']}"
+    )
+
     embed = {
-        "title": "🆕 New FS25 Mod",
-        "description": f"**{mod['name']}**",
+        "title": title,
+        "description": description,
         "url": mod["url"],
-        "color": 3066993,
+        "color": color,
         "footer": {
             "text": "KingMods • Farming Simulator 25"
         }
     }
 
-    # Add mod image if found
     if mod.get("image"):
         embed["image"] = {
             "url": mod["image"]
@@ -141,52 +305,76 @@ def send_discord(mod):
 def main():
     print("Checking KingMods...")
 
-    html = get_page()
+    html = get_page(KINGMODS_URL)
 
     parser = ModParser()
     parser.feed(html)
 
-    mods = parser.mods[:120]
+    print(f"Found {len(parser.mods)} valid timestamped entries.")
 
-    print(f"Found {len(mods)} mods.")
+    valid_mods = []
 
-    for mod in mods:
-        print(
-            f"MOD: {mod['name']} | "
-            f"IMAGE: {mod['image'] or 'NONE'}"
-        )
+    for mod in parser.mods:
+        age = parse_age(mod["time_text"])
+
+        if age is None:
+            continue
+
+        if age <= MAX_AGE_DAYS:
+            valid_mods.append(mod)
+        else:
+            print(
+                f"IGNORED OLD MOD: {mod['name']} "
+                f"({mod['time_text']})"
+            )
+
+    print(f"Fresh entries: {len(valid_mods)}")
 
     sent = load_sent()
 
-    # First run: remember existing mods without sending them
+    # First run:
+    # remember currently visible fresh mods without sending them.
     if not sent:
-        for mod in mods:
+        for mod in valid_mods:
             sent.add(mod["url"])
 
         save_sent(sent)
+
         print("Initial database created.")
         return
 
     new_mods = []
 
-    for mod in reversed(mods):
+    for mod in reversed(valid_mods):
         if mod["url"] not in sent:
             new_mods.append(mod)
 
-    print(f"New mods: {len(new_mods)}")
+    print(f"New entries: {len(new_mods)}")
 
     for mod in new_mods:
+        print(f"Processing: {mod['name']}")
+
+        details = get_mod_details(mod)
+
         try:
-            send_discord(mod)
+            send_discord(details)
             sent.add(mod["url"])
-            print(f"Sent: {mod['name']}")
+
+            print(
+                f"Sent: {details['name']} "
+                f"({'UPDATE' if details['is_update'] else 'NEW'})"
+            )
+
         except Exception as e:
             print(f"Discord error: {e}")
 
-    if len(sent) > 2000:
-        sent = set(list(sent)[-1500:])
+    # Keep database from becoming unnecessarily huge.
+    if len(sent) > 3000:
+        sent = set(list(sent)[-2000:])
 
     save_sent(sent)
+
+    print("Done.")
 
 
 if __name__ == "__main__":
